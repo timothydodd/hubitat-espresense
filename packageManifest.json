@@ -1,0 +1,19 @@
+{
+  "packageName": "ESPresense Device Tracker MQTT Driver",
+  "author": "Tim Dodd",
+  "version": "1.1",
+  "minimumHEVersion": "2.1.9",
+  "dateReleased": "2025-03-13",
+  "releaseNotes": "Added 15-second timeout for room data to improve tracking reliability",
+  "drivers": [
+    {
+      "id": "de325ef8-ab84-4b8c-904f-9507f4352c48",
+      "name": "ESPresense Device Tracker MQTT Driver",
+      "namespace": "dodd",
+      "location": "https://raw.githubusercontent.com/timothydodd/hubitat-espresense/main/espresense-driver.groovy",
+      "required": true,
+      "version": "1.1"
+    }
+  ],
+  "documentationLink": "https://github.com/timothydodd/hubitat-espresense/blob/main/README.md"
+}
