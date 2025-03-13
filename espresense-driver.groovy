@@ -120,9 +120,47 @@ def parse(String description) {
         def topicParts = topic.split('/')
         def room = topicParts[-1] // Get the last part of the topic
 
-        def payload = new groovy.json.JsonSlurper().parseText(message.payload)
-        logDebug "Received MQTT message: ${payload}"
-        def distance = payload.distance
+        // Fix for key=value format in topic
+        if (room.contains('=')) {
+            def roomParts = room.split('=')
+            room = roomParts[0].trim()
+        // If we have a direct distance in the topic, we could use it
+        // But we'll prefer the JSON payload data since it's more reliable
+        }
+
+        logDebug "Received MQTT message payload: ${message.payload}"
+
+        // Try to parse as JSON first
+        def distance = null
+        try {
+            def payload = new groovy.json.JsonSlurper().parseText(message.payload)
+            logDebug "Parsed JSON payload: ${payload}"
+            distance = payload.distance
+        } catch (Exception e) {
+            // If JSON parsing fails, try to handle other formats
+            logDebug "JSON parsing failed, trying alternative parsing: ${e.message}"
+
+            // Check if it's a simple key=value format
+            if (message.payload.contains('=')) {
+                try {
+                    def parts = message.payload.split('=')
+                    if (parts.size() >= 2) {
+                        distance = parts[1].trim().toFloat()
+                        logDebug "Parsed distance from key=value format: ${distance}"
+                    }
+                } catch (Exception e2) {
+                    log.error "Failed to parse key=value format: ${e2.message}"
+                }
+            } else {
+                // Try to parse as a simple number
+                try {
+                    distance = message.payload.trim().toFloat()
+                    logDebug "Parsed distance as numeric value: ${distance}"
+                } catch (Exception e3) {
+                    log.error "Failed to parse as numeric value: ${e3.message}"
+                }
+            }
+        }
 
         // Store room distance and timestamp
         state.roomDistances = state.roomDistances ?: [:]
@@ -141,34 +179,57 @@ def cleanupStaleRoomData() {
     def currentTime = now()
     def dataChanged = false
 
-    // Check if we have any timestamps to process
-    if (!state.roomTimestamps) {
-        return
-    }
+    // Initialize state maps if they don't exist
+    state.roomDistances = state.roomDistances ?: [:]
+    state.roomTimestamps = state.roomTimestamps ?: [:]
 
-    // Remove stale entries
-    def staleFree = state.roomTimestamps.findAll { room, timestamp ->
-        if ((currentTime - timestamp) <= timeout) {
-            return true // Keep this entry
-        } else {
+    // First, remove entries from roomDistances that don't have a timestamp
+    def roomsToRemove = []
+    state.roomDistances.each { room, distance ->
+        if (!state.roomTimestamps.containsKey(room)) {
+            roomsToRemove << room
             dataChanged = true
-            logDebug "Room ${room} data is stale and will be removed"
-            state.roomDistances.remove(room)
-            return false // Remove this entry
+            logDebug "Room ${room} has no timestamp and will be removed"
         }
     }
 
-    // Update timestamps
-    state.roomTimestamps = staleFree
+    // Remove the identified rooms from roomDistances
+    roomsToRemove.each { room ->
+        state.roomDistances.remove(room)
+    }
+
+    // Now handle stale timestamps
+    def freshTimestamps = [:]
+    state.roomTimestamps.each { room, timestamp ->
+        if ((currentTime - timestamp) <= timeout) {
+            // Keep fresh entries
+            freshTimestamps[room] = timestamp
+        } else {
+            // Remove stale entries
+            dataChanged = true
+            logDebug "Room ${room} data is stale (${(currentTime - timestamp)/1000}s old) and will be removed"
+            state.roomDistances.remove(room)
+        }
+    }
+
+    // Update timestamps with only the fresh ones
+    state.roomTimestamps = freshTimestamps
+
+    logDebug "After cleanup: ${state.roomDistances.size()} rooms with distances, ${state.roomTimestamps.size()} rooms with timestamps"
 
     // If data changed, recalculate closest room
     if (dataChanged) {
         calculateClosestRoom()
     }
 }
+/**
+ * Calculate the closest room based on the current valid data
+ */
 def calculateClosestRoom() {
     // Get the room with the minimum distance
     def roomDistances = state.roomDistances ?: [:]
+
+    logDebug "Current roomDistances: ${roomDistances}"
 
     if (roomDistances.isEmpty()) {
         if (state.closestRoom) {
@@ -185,9 +246,57 @@ def calculateClosestRoom() {
         return
     }
 
-    def closestEntry = roomDistances.min { room, distance -> distance }
-    def closestRoom = closestEntry.key
-    def closestDistance = closestEntry.value
+    // Ensure all values in the map are numeric
+    def sanitizedDistances = [:]
+    roomDistances.each { roomKey, distValue ->
+        try {
+            // Handle any non-standard room keys (clean them up)
+            def cleanRoomKey = roomKey
+            if (roomKey instanceof String && roomKey.contains('=')) {
+                cleanRoomKey = roomKey.split('=')[0].trim()
+            }
+
+            // Handle any non-numeric distance values
+            def numericDistance = 0
+            if (distValue instanceof Number) {
+                numericDistance = distValue as float
+            } else if (distValue instanceof String) {
+                numericDistance = distValue.trim().toFloat()
+            } else {
+                logDebug "Converting non-standard distance value: ${distValue} (${distValue.class.name})"
+                numericDistance = distValue.toString().trim().toFloat()
+            }
+
+            sanitizedDistances[cleanRoomKey] = numericDistance
+            logDebug "Sanitized: ${cleanRoomKey} -> ${numericDistance}"
+        } catch (Exception e) {
+            log.error "Error processing distance entry [${roomKey}:${distValue}]: ${e.message}"
+        }
+    }
+
+    if (sanitizedDistances.isEmpty()) {
+        logInfo 'No valid distance data after sanitization'
+        return
+    }
+
+    // Find the minimum distance entry
+    def closestEntry = null
+    def closestRoom = null
+    def closestDistance = Float.MAX_VALUE
+
+    sanitizedDistances.each { room, distance ->
+        if (distance < closestDistance) {
+            closestRoom = room
+            closestDistance = distance
+        }
+    }
+
+    if (closestRoom == null) {
+        logInfo 'Could not determine closest room'
+        return
+    }
+
+    logDebug "Found closest room: ${closestRoom} with distance: ${closestDistance}"
 
     // Update if the closest room has changed
     if (closestRoom != state.closestRoom || closestDistance != state.closestDistance) {
@@ -200,10 +309,11 @@ def calculateClosestRoom() {
         logDebug "Updated closest room to: ${closestRoom}, distance: ${closestDistance}m"
 
         sendEvent(name: 'closestRoom', value: closestRoom, descriptionText: "Device is closest to ${closestRoom}")
-        sendEvent(name: 'previousRoom', value: state.previousRoom, descriptionText: "Previously in ${state.previousRoom ?: 'none'}")
+        sendEvent(name: 'previousRoom', value: state.previousRoom ?: 'none', descriptionText: "Previously in ${state.previousRoom ?: 'none'}")
         sendEvent(name: 'roomChangedDate', value: state.roomChangedDate, descriptionText: "Room changed at ${state.roomChangedDate}")
     }
 }
+
 def roundToNearestHalf(double value) {
     return (Math.round(value * 5) / 5.0).toBigDecimal().setScale(1, BigDecimal.ROUND_HALF_UP)
 }
