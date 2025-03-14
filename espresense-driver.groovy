@@ -2,7 +2,7 @@
  *  ESPresense Device Tracker MQTT Driver
  *  Device Driver for Hubitat Elevation hub
  *  Tracks device proximity using ESPresense MQTT data
- *  2025-03-13
+ *  2025-03-14
  */
 metadata {
     definition(name: 'ESPresense Device Tracker MQTT Driver', namespace: 'dodd', author: 'Tim Dodd') {
@@ -111,6 +111,7 @@ def mqttClientStatus(String status) {
  */
 def parse(String description) {
     try {
+        
         // Parse the MQTT message
         def message = interfaces.mqtt.parseMessage(description)
 
@@ -180,8 +181,8 @@ def cleanupStaleRoomData() {
     def dataChanged = false
 
     // Initialize state maps if they don't exist
-    state.roomDistances = state.roomDistances ?: [:]
-    state.roomTimestamps = state.roomTimestamps ?: [:]
+    //state.roomDistances = state.roomDistances ?: [:]
+    //state.roomTimestamps = state.roomTimestamps ?: [:]
 
     // First, remove entries from roomDistances that don't have a timestamp
     def roomsToRemove = []
@@ -227,7 +228,7 @@ def cleanupStaleRoomData() {
  */
 def calculateClosestRoom() {
     // Get the room with the minimum distance
-    def roomDistances = state.roomDistances ?: [:]
+    def roomDistances = state.roomDistances//?: [:]
 
     logDebug "Current roomDistances: ${roomDistances}"
 
@@ -299,7 +300,8 @@ def calculateClosestRoom() {
     logDebug "Found closest room: ${closestRoom} with distance: ${closestDistance}"
 
     // Update if the closest room has changed
-    if (closestRoom != state.closestRoom || closestDistance != state.closestDistance) {
+    if (closestRoom != state.closestRoom) {
+        def pr =  state.previousRoom
         state.previousRoom = state.closestRoom
         state.closestRoom = closestRoom
         state.closestDistance = closestDistance
@@ -309,8 +311,12 @@ def calculateClosestRoom() {
         logDebug "Updated closest room to: ${closestRoom}, distance: ${closestDistance}m"
 
         sendEvent(name: 'closestRoom', value: closestRoom, descriptionText: "Device is closest to ${closestRoom}")
-        sendEvent(name: 'previousRoom', value: state.previousRoom ?: 'none', descriptionText: "Previously in ${state.previousRoom ?: 'none'}")
+        sendEvent(name: 'previousRoom', value: pr ?: 'none', descriptionText: "Previously in ${pr ?: 'none'}")
         sendEvent(name: 'roomChangedDate', value: state.roomChangedDate, descriptionText: "Room changed at ${state.roomChangedDate}")
+    }
+    else if(closestDistance != state.closestDistance)
+    {
+        state.closestDistance = closestDistance
     }
 }
 
